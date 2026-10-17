@@ -1,3 +1,8 @@
+/**
+ * What this proves: the workspace cannot be escaped or abused — path
+ * traversal, absolute paths, symlinks, oversized files, .env reads, and new
+ * file creation are all rejected; writes are atomic.
+ */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

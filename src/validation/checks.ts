@@ -1,3 +1,9 @@
+/**
+ * Running the repository's own validation commands after edits are applied.
+ *
+ * Commands come from two sources: the repo's declared `typecheck`/`test`
+ * scripts (never guessed) and explicit `--validate-cmd` flags.
+ */
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";

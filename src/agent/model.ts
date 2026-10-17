@@ -1,3 +1,18 @@
+/**
+ * The only place that talks to an AI provider.
+ *
+ * The rest of the codebase speaks a tiny provider-neutral language
+ * (`ConversationItem`, `ToolDef`, `ModelTurn`). Two implementations exist:
+ *
+ *   - OpenAIModelClient  — real calls to the OpenAI Responses API;
+ *   - ScriptedModelClient — a deterministic test double that replays
+ *     scripted tool calls (used by the test suite and the offline demo).
+ *
+ * Provider-specific output items (e.g. reasoning items) travel as opaque
+ * `assistant` values and are echoed back verbatim, exactly as the Responses
+ * API expects. That keeps the two small helper functions below the only
+ * provider-specific code in the project.
+ */
 import OpenAI from "openai";
 import type { TokenUsage } from "./events.js";
 
@@ -10,9 +25,8 @@ export type ToolDef = {
 };
 
 /**
- * Provider-neutral conversation item. Provider-specific output items (e.g.
- * reasoning items from the OpenAI Responses API) travel as opaque `assistant`
- * values and are echoed back verbatim.
+ * Provider-neutral conversation item. `assistant` wraps provider-specific
+ * output items unchanged; nothing outside this file inspects them.
  */
 export type ConversationItem =
   | { kind: "user"; text: string }
@@ -22,9 +36,12 @@ export type ConversationItem =
 export type ParsedCall = { callId: string; name: string; arguments: string };
 
 export type ModelTurn = {
+  /** Tool calls the model requested this turn. */
   calls: ParsedCall[];
+  /** Assistant text, if any (usually empty while tools are being used). */
   text: string;
-  newItems: ConversationItem[];
+  /** Items the provider produced; append these to the conversation. */
+  outputItems: ConversationItem[];
   usage?: TokenUsage;
 };
 
@@ -40,7 +57,7 @@ export interface ModelClient {
   complete(request: ModelRequest): Promise<ModelTurn>;
 }
 
-/* -------------------------------- OpenAI --------------------------------- */
+/* ---------------------------- OpenAI (live) ------------------------------ */
 
 export type OpenAIModelOptions = {
   model: string;
@@ -63,36 +80,17 @@ export class OpenAIModelClient implements ModelClient {
   }
 
   async complete(request: ModelRequest): Promise<ModelTurn> {
-    const input = request.items.map((item) => {
-      switch (item.kind) {
-        case "user":
-          return { role: "user", content: item.text };
-        case "assistant":
-          return item.raw;
-        case "function_call_output":
-          return {
-            type: "function_call_output",
-            call_id: item.callId,
-            output: item.output,
-          };
-      }
-    });
-
     const response = await this.client.responses.create({
       model: this.model,
       instructions: request.system,
-      tools: request.tools.map((tool) => ({
-        type: "function" as const,
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-        strict: true,
-      })),
-      input: input as never,
+      tools: request.tools.map(toProviderTool),
+      // The SDK types `input` as a strict union; our pass-through items are
+      // intentionally provider-shaped, so the cast is confined to this line.
+      input: toProviderInput(request.items) as never,
     });
 
     const calls: ParsedCall[] = [];
-    const newItems: ConversationItem[] = [];
+    const outputItems: ConversationItem[] = [];
     for (const item of response.output) {
       if (item.type === "function_call") {
         calls.push({
@@ -101,18 +99,51 @@ export class OpenAIModelClient implements ModelClient {
           arguments: item.arguments,
         });
       }
-      newItems.push({ kind: "assistant", raw: item });
+      outputItems.push({ kind: "assistant", raw: item });
     }
 
     return {
       calls,
       text: response.output_text ?? "",
-      newItems,
+      outputItems,
       usage: mapUsage(response.usage),
     };
   }
 }
 
+/** Our ToolDef -> a Responses API function tool. */
+function toProviderTool(tool: ToolDef) {
+  return {
+    type: "function" as const,
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+    strict: true,
+  };
+}
+
+/**
+ * The neutral conversation -> the Responses API `input` array. Previous
+ * provider items must be passed back unchanged, so they go through as-is.
+ */
+function toProviderInput(items: ConversationItem[]): unknown[] {
+  return items.map((item) => {
+    switch (item.kind) {
+      case "user":
+        return { role: "user", content: item.text };
+      case "assistant":
+        return item.raw;
+      case "function_call_output":
+        return {
+          type: "function_call_output",
+          call_id: item.callId,
+          output: item.output,
+        };
+    }
+  });
+}
+
+/** The SDK's usage object is loosely typed; pull out the two numbers we show. */
 function mapUsage(usage: unknown): TokenUsage | undefined {
   if (!usage || typeof usage !== "object") return undefined;
   const record = usage as Record<string, unknown>;
@@ -122,7 +153,7 @@ function mapUsage(usage: unknown): TokenUsage | undefined {
   return { inputTokens: input, outputTokens: output };
 }
 
-/* ------------------------------- Scripted -------------------------------- */
+/* ------------------------- Scripted (tests/demo) ------------------------- */
 
 export type ScriptContext = {
   turn: number;
@@ -138,7 +169,7 @@ export type ScriptedTurn = (context: ScriptContext) => ScriptedToolCall[] | null
 /**
  * Deterministic stand-in for a model: replays scripted tool calls turn by
  * turn and can inspect previous tool outputs. Used by the test suite and by
- * the offline demo mode (`--mock`) so the full pipeline is runnable without
+ * the offline demo mode (`--mock`) so the whole pipeline is runnable without
  * API credentials. It is a test double, not a model.
  */
 export class ScriptedModelClient implements ModelClient {
@@ -152,6 +183,7 @@ export class ScriptedModelClient implements ModelClient {
   ) {}
 
   async complete(request: ModelRequest): Promise<ModelTurn> {
+    // Collect what previous tools returned, so scripted turns can react to it.
     const outputsByCall = new Map<string, string>();
     const lastByTool = new Map<string, string>();
     for (const item of request.items) {
@@ -167,7 +199,7 @@ export class ScriptedModelClient implements ModelClient {
     this.index += 1;
 
     if (!turn) {
-      return { calls: [], text: this.finalText, newItems: [] };
+      return { calls: [], text: this.finalText, outputItems: [] };
     }
 
     const produced = turn({
@@ -177,7 +209,7 @@ export class ScriptedModelClient implements ModelClient {
     });
 
     if (!produced || produced.length === 0) {
-      return { calls: [], text: this.finalText, newItems: [] };
+      return { calls: [], text: this.finalText, outputItems: [] };
     }
 
     const calls = produced.map((call, callIndex) => {
@@ -188,6 +220,6 @@ export class ScriptedModelClient implements ModelClient {
 
     // The scripted client reads tool outputs straight from the conversation,
     // so it does not need its own items echoed back.
-    return { calls, text: "", newItems: [] };
+    return { calls, text: "", outputItems: [] };
   }
 }

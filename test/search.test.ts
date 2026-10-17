@@ -1,3 +1,8 @@
+/**
+ * What this proves: RRF fuses rankings (ranks, not raw scores); cosine
+ * similarity behaves; hybrid retrieval surfaces candidates found by either
+ * the lexical or the semantic strategy.
+ */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   cosineSimilarity,

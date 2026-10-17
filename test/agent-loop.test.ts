@@ -1,3 +1,8 @@
+/**
+ * What this proves: the loop runs search -> read -> stage, returns tool
+ * errors to the model for recovery, honors the step limit, and uses the
+ * injected retrieval strategy.
+ */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentEvent } from "../src/agent/events.js";
 import { runAgent } from "../src/agent/loop.js";

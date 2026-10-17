@@ -4,6 +4,14 @@ import type { ProposalStore } from "../editing/proposal.js";
 import type { AgentEventHandler } from "./events.js";
 import type { ToolDef } from "./model.js";
 
+/**
+ * The three tools the model may call.
+ *
+ * Each tool returns a string that is sent back to the model. Failures are
+ * converted into `{ "error": ... }` JSON plus a `tool_error` event, so the
+ * model can correct itself (e.g. re-read a file after a bad oldText) instead
+ * of crashing the loop.
+ */
 export type ToolOutcome = { result: string; isError: boolean };
 
 export type ToolContext = {

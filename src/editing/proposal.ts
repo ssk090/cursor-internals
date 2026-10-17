@@ -1,3 +1,15 @@
+/**
+ * Staged edits — the model never writes files.
+ *
+ * `ProposalStore` collects the edits proposed during an agent run. Two rules
+ * keep them shippable (covered by test/proposal.test.ts):
+ *
+ *   1. oldText must match exactly once in the file *as staged so far*, so
+ *      several edits to one file compose in order and ambiguous edits fail
+ *      with an actionable error.
+ *   2. `original` is captured the first time a file is edited; the apply step
+ *      refuses to write if the file no longer matches it (drift detection).
+ */
 import type { Workspace } from "../context/workspace.js";
 
 export type StagedEdit = {
@@ -10,31 +22,18 @@ export type StagedEdit = {
 
 export class EditError extends Error {}
 
+/** How many non-overlapping times `needle` appears in `haystack`. */
 function countOccurrences(haystack: string, needle: string): number {
   if (needle.length === 0) return 0;
-  let count = 0;
-  let index = haystack.indexOf(needle);
-  while (index !== -1) {
-    count += 1;
-    index = haystack.indexOf(needle, index + needle.length);
-  }
-  return count;
+  return haystack.split(needle).length - 1;
 }
 
-/**
- * Holds the edits proposed by the agent before anything touches disk.
- *
- * Invariants:
- * - oldText must match exactly once in the file *as staged so far* (so several
- *   edits to one file compose in order, and ambiguous edits are rejected).
- * - `original` is captured the first time a file is edited; the apply step
- *   refuses to write if the file no longer matches it (drift detection).
- */
 export class ProposalStore {
   private readonly staged = new Map<string, StagedEdit>();
 
   constructor(private readonly workspace: Workspace) {}
 
+  /** All files staged so far, one entry per file. */
   list(): StagedEdit[] {
     return [...this.staged.values()];
   }
@@ -44,12 +43,16 @@ export class ProposalStore {
       throw new EditError("oldText must not be empty");
     }
 
-    const previous = this.staged.get(file);
-    const current = previous ? previous.updated : await this.workspace.readFile(file);
+    // Validate against the file as edited so far, so multiple proposals for
+    // the same file compose in order.
+    const alreadyStaged = this.staged.get(file);
+    const currentContent = alreadyStaged
+      ? alreadyStaged.updated
+      : await this.workspace.readFile(file);
 
-    const occurrences = countOccurrences(current, oldText);
+    const occurrences = countOccurrences(currentContent, oldText);
     if (occurrences === 0) {
-      const hint = current.includes(oldText.trim())
+      const hint = currentContent.includes(oldText.trim())
         ? " The text is present but with different whitespace — copy indentation and newlines exactly from read_file."
         : "";
       throw new EditError(
@@ -62,13 +65,15 @@ export class ProposalStore {
       );
     }
 
-    const index = current.indexOf(oldText);
+    const index = currentContent.indexOf(oldText);
     const updated =
-      current.slice(0, index) + newText + current.slice(index + oldText.length);
+      currentContent.slice(0, index) +
+      newText +
+      currentContent.slice(index + oldText.length);
 
     const staged: StagedEdit = {
       file,
-      original: previous ? previous.original : current,
+      original: alreadyStaged ? alreadyStaged.original : currentContent,
       updated,
     };
     this.staged.set(file, staged);

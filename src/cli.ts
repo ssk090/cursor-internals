@@ -1,3 +1,17 @@
+/**
+ * The mini-cursor command line: where everything comes together.
+ *
+ * Flow:
+ *   1. parse arguments, open the workspace;
+ *   2. choose the model client (live OpenAI or the offline demo);
+ *   3. run the agent loop so it can search, read and stage edits;
+ *   4. print the staged diffs and ask for approval;
+ *   5. write the approved edits (drift-checked, atomic);
+ *   6. optionally run the repository's own checks.
+ *
+ * Nothing touches the repository before step 5, and only after an explicit
+ * "yes" (or --yes).
+ */
 import "dotenv/config";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -59,6 +73,10 @@ function printUsage(): void {
   );
 }
 
+/**
+ * Flags (--x) configure the run; positional arguments are the repo path
+ * followed by the task words, e.g. `npm run dev -- ./repo "fix the bug"`.
+ */
 function parseArgs(argv: string[]): CliOptions | "help" {
   const options: CliOptions = {
     root: "",
@@ -121,6 +139,7 @@ function parseArgs(argv: string[]): CliOptions | "help" {
   return options;
 }
 
+/** One readable line per agent event. */
 function renderEvent(event: AgentEvent): void {
   switch (event.type) {
     case "searching": {
@@ -160,61 +179,56 @@ function renderEvent(event: AgentEvent): void {
   }
 }
 
+/** Write the collected events as one JSON object per line. */
 async function writeEventLog(logPath: string, lines: string[]): Promise<void> {
   const resolved = path.resolve(logPath);
   await fs.mkdir(path.dirname(resolved), { recursive: true });
   await fs.writeFile(resolved, lines.length > 0 ? lines.join("\n") + "\n" : "", "utf8");
 }
 
-async function main(argv: string[]): Promise<void> {
-  let options: CliOptions | "help";
-  try {
-    options = parseArgs(argv);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    printUsage();
-    process.exitCode = 2;
-    return;
-  }
-  if (options === "help") {
-    printUsage();
-    return;
-  }
+/* ----------------------------- steps of a run ---------------------------- */
 
-  const workspace = new Workspace(options.root);
-  await workspace.assertReady();
+function createModelClient(options: CliOptions): ModelClient {
+  if (options.mock) return createFixtureDemoClient();
 
-  // ---------------------------------------------------------------- model
-  let model: ModelClient;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "OPENAI_API_KEY is not set. Copy .env.example to .env and fill it in, or run `npm run demo` for the offline demo.",
+    );
+  }
+  return new OpenAIModelClient({
+    model: options.model ?? process.env.OPENAI_MODEL ?? "gpt-5.4",
+    apiKey,
+    baseURL: process.env.OPENAI_BASE_URL,
+  });
+}
+
+/** Pick the retrieval strategy described by --retrieval. */
+function createSearchStrategy(
+  workspace: Workspace,
+  options: CliOptions,
+): { search: SearchStrategy | undefined; searchLabel: string } {
+  if (options.retrieval !== "hybrid") {
+    return { search: undefined, searchLabel: "lexical" };
+  }
   if (options.mock) {
-    model = createFixtureDemoClient();
-  } else {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error(
-        "OPENAI_API_KEY is not set. Copy .env.example to .env and fill it in, or run `npm run demo` for the offline demo.",
-      );
-    }
-    model = new OpenAIModelClient({
-      model: options.model ?? process.env.OPENAI_MODEL ?? "gpt-5.4",
-      apiKey,
-      baseURL: process.env.OPENAI_BASE_URL,
-    });
+    console.log("[retrieval] hybrid requested; the offline demo stays on lexical.");
+    return { search: undefined, searchLabel: "lexical" };
   }
+  return {
+    search: makeHybridSearch(workspace, new OpenAIEmbedder()),
+    searchLabel: "hybrid(rrf)",
+  };
+}
 
-  // ------------------------------------------------------------ retrieval
-  let search: SearchStrategy | undefined;
-  let searchLabel = "lexical";
-  if (options.retrieval === "hybrid") {
-    if (options.mock) {
-      console.log("[retrieval] hybrid requested; the offline demo stays on lexical.");
-    } else {
-      search = makeHybridSearch(workspace, new OpenAIEmbedder());
-      searchLabel = "hybrid(rrf)";
-    }
-  }
-
-  // ---------------------------------------------------------------- run
+/** Print the header, run the agent loop, and always write the event log. */
+async function runAgentPhase(
+  workspace: Workspace,
+  model: ModelClient,
+  retrieval: { search: SearchStrategy | undefined; searchLabel: string },
+  options: CliOptions,
+): Promise<StagedEdit[]> {
   const logLines: string[] = [];
   const onEvent = (event: AgentEvent): void => {
     renderEvent(event);
@@ -225,85 +239,90 @@ async function main(argv: string[]): Promise<void> {
 
   console.log(`mini-cursor  repo: ${workspace.root}`);
   console.log(
-    `model: ${model.label}  retrieval: ${searchLabel}  max steps: ${options.maxSteps}`,
+    `model: ${model.label}  retrieval: ${retrieval.searchLabel}  max steps: ${options.maxSteps}`,
   );
   if (options.mock) {
     console.log("offline demo mode: replaying a canned plan for the bundled fixture");
   }
   console.log(`task: ${options.task}\n`);
 
-  let edits: StagedEdit[] = [];
   try {
-    edits = await runAgent(workspace, options.task, {
+    return await runAgent(workspace, options.task, {
       model,
       maxSteps: options.maxSteps,
       onEvent,
-      search,
-      searchLabel,
+      search: retrieval.search,
+      searchLabel: retrieval.searchLabel,
     });
   } finally {
     if (options.logPath) {
       await writeEventLog(options.logPath, logLines);
     }
   }
+}
 
-  if (edits.length === 0) {
-    console.log("\nNo edits proposed.");
-    return;
-  }
-
-  // --------------------------------------------------------------- review
+/** One unified diff per staged file, with added/removed line counts. */
+function printDiffReview(edits: StagedEdit[]): void {
   console.log(`\n${edits.length} file(s) with proposed changes:\n`);
   for (const edit of edits) {
     console.log(unifiedDiff(edit));
     const stats = diffStats(edit.original, edit.updated);
     console.log(`  ${edit.file}: +${stats.added} -${stats.removed}\n`);
   }
+}
 
-  if (options.dryRun) {
-    console.log("Dry run: nothing was written.");
-    return;
-  }
+type ApprovalOutcome = "approved" | "rejected" | "skipped";
 
-  // ------------------------------------------------------------- approval
-  let approved = options.yes;
+/** The yes/no gate. Prints the reason for anything but an explicit yes. */
+async function askForApproval(options: CliOptions): Promise<ApprovalOutcome> {
   if (options.yes) {
     console.log("--yes given: applying without an interactive prompt.");
-  } else if (!stdin.isTTY) {
+    return "approved";
+  }
+  if (!stdin.isTTY) {
     console.log(
       "No interactive terminal available; rerun with --yes to apply or --dry-run to inspect.",
     );
-    return;
-  } else {
-    const rl = readline.createInterface({ input: stdin, output: stdout });
-    try {
-      const answer = await rl.question("Apply all changes? (yes/no): ");
-      approved = answer.trim().toLowerCase() === "yes";
-    } finally {
-      rl.close();
-    }
+    return "skipped";
   }
 
-  if (!approved) {
-    console.log("Changes rejected. Nothing was written.");
-    return;
-  }
-
-  // ---------------------------------------------------------------- apply
-  let appliedFiles: string[];
+  const rl = readline.createInterface({ input: stdin, output: stdout });
   try {
-    appliedFiles = await applyEdits(workspace, edits);
+    const answer = await rl.question("Apply all changes? (yes/no): ");
+    if (answer.trim().toLowerCase() !== "yes") {
+      console.log("Changes rejected. Nothing was written.");
+      return "rejected";
+    }
+    return "approved";
+  } finally {
+    rl.close();
+  }
+}
+
+/** Write the approved edits. Returns the file list, or null when stale. */
+async function applyApproved(
+  workspace: Workspace,
+  edits: StagedEdit[],
+): Promise<string[] | null> {
+  try {
+    const files = await applyEdits(workspace, edits);
+    console.log(`Changes applied to ${files.length} file(s): ${files.join(", ")}`);
+    return files;
   } catch (error) {
     if (error instanceof StaleEditError) {
       console.error(error.message);
       process.exitCode = 1;
-      return;
+      return null;
     }
     throw error;
   }
-  console.log(`Changes applied to ${appliedFiles.length} file(s): ${appliedFiles.join(", ")}`);
+}
 
-  // ----------------------------------------------------------- validation
+/** Run --validate-cmd commands and/or the repo's own declared scripts. */
+async function runValidationPhase(
+  workspace: Workspace,
+  options: CliOptions,
+): Promise<void> {
   const commands = [...options.validateCommands];
   if (options.validate) {
     const detected = await resolveWorkspaceChecks(workspace);
@@ -326,6 +345,9 @@ async function main(argv: string[]): Promise<void> {
     console.log(
       `[${result.passed ? "PASS" : "FAIL"}] ${command} (exit ${result.exitCode ?? "n/a"}, ${result.durationMs} ms)`,
     );
+
+    // Show at most the first and last 20 lines; the whole output is capped
+    // by the checks module.
     const outputLines = result.output.trimEnd().split("\n").filter(Boolean);
     if (outputLines.length > 0) {
       const shown =
@@ -349,6 +371,47 @@ async function main(argv: string[]): Promise<void> {
     );
     process.exitCode = 1;
   }
+}
+
+/* ---------------------------------- main --------------------------------- */
+
+async function main(argv: string[]): Promise<void> {
+  let options: CliOptions | "help";
+  try {
+    options = parseArgs(argv);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    printUsage();
+    process.exitCode = 2;
+    return;
+  }
+  if (options === "help") {
+    printUsage();
+    return;
+  }
+
+  const workspace = new Workspace(options.root);
+  await workspace.assertReady();
+
+  const model = createModelClient(options);
+  const retrieval = createSearchStrategy(workspace, options);
+
+  const edits = await runAgentPhase(workspace, model, retrieval, options);
+  if (edits.length === 0) {
+    console.log("\nNo edits proposed.");
+    return;
+  }
+
+  printDiffReview(edits);
+  if (options.dryRun) {
+    console.log("Dry run: nothing was written.");
+    return;
+  }
+
+  if ((await askForApproval(options)) !== "approved") return;
+  if ((await applyApproved(workspace, edits)) === null) return;
+
+  await runValidationPhase(workspace, options);
 }
 
 main(process.argv.slice(2)).catch((error: unknown) => {

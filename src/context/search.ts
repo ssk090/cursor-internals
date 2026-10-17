@@ -1,3 +1,14 @@
+/**
+ * Retrieval strategies for the `search_code` tool, simplest first:
+ *
+ *   lexicalSearch    filename + keyword scoring (see context/workspace.ts)
+ *   embeddingSearch  cosine similarity over per-file embeddings; the small
+ *                    Embedder interface keeps this testable offline
+ *   makeHybridSearch lexical + semantic, fused with Reciprocal Rank Fusion
+ *
+ * RRF fuses *ranks*, not scores, so the two strategies' incomparable score
+ * scales never meet:  RRF(d) = sum over rankings of 1 / (60 + rank(d)).
+ */
 import type { SearchHit } from "./workspace.js";
 import type { Workspace } from "./workspace.js";
 

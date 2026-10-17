@@ -2,13 +2,91 @@
 
 A small, working AI code-editing agent built as a **reverse-engineering
 project**, not a wrapper: we collect evidence about how Cursor behaves and
-what it documents, form hypotheses, and then build and test our own
+what it documents, form hypotheses, then build and test our own
 implementation against those hypotheses.
 
-- Evidence ledger: [`docs/research-notes.md`](docs/research-notes.md)
-- Experiment protocol (six Cursor experiments + retrieval benchmark):
-  [`experiments/README.md`](experiments/README.md)
-- Target fixture: [`fixtures/sample-react-app`](fixtures/sample-react-app)
+- **New here?** [docs/code-tour.md](docs/code-tour.md) — reading order and a
+  one-picture flow.
+- Evidence ledger: [docs/research-notes.md](docs/research-notes.md)
+- Experiment protocol: [experiments/README.md](experiments/README.md)
+- Target fixture: [fixtures/sample-react-app](fixtures/sample-react-app)
+
+---
+
+## Steps to run it
+
+### What you need
+
+- Node.js 20 or newer (check with `node -v`)
+- npm (comes with Node)
+- git (recommended — it is the checkpoint mechanism)
+
+### Step 1 — Install
+
+```powershell
+cd D:\Work-Projects\cursor-internals
+npm install
+```
+
+### Step 2 — Run the offline demo (no API key needed)
+
+This replays a canned plan against the bundled fixture so you can watch the
+whole pipeline — search, read, stage, diff — without any credentials. It
+does not write anything.
+
+```powershell
+npm run demo
+```
+
+You will see the tool activity, then unified diffs for 3 files, then
+`Dry run: nothing was written.`
+
+### Step 3 — Apply the demo to the fixture and validate (optional)
+
+Same run, but it applies the edits and then runs the fixture's own checks
+(`tsc --noEmit` and `vitest run`). `git restore` puts everything back.
+
+```powershell
+npm run dev -- fixtures/sample-react-app --mock --yes --validate
+git restore fixtures
+```
+
+### Step 4 — Run it for real (live model)
+
+```powershell
+Copy-Item .env.example .env
+notepad .env    # set OPENAI_API_KEY=sk-... (OPENAI_MODEL optional)
+```
+
+Then point it at the fixture and watch the diffs:
+
+```powershell
+npm run dev -- fixtures/sample-react-app "Add a search input to the users table, debounce it by 300ms, and update the API request."
+```
+
+It prints the proposed diffs and asks `Apply all changes? (yes/no)` before
+writing anything.
+
+### Step 5 — Point it at your own repository
+
+```powershell
+cd C:\path\to\your\repo
+git add -A; git commit -m "checkpoint"     # safety net first
+cd D:\Work-Projects\cursor-internals
+npm run dev -- C:\path\to\your\repo "Fix the stale closure in the cart hook" --validate --log experiments/runs/run.jsonl
+```
+
+Any OpenAI-compatible endpoint works via `OPENAI_BASE_URL` + `OPENAI_MODEL`
+in `.env`.
+
+### Step 6 — Run the project's own checks
+
+```powershell
+npm test           # 39 tests (1 skipped on Windows: symlink needs elevation)
+npm run typecheck  # TypeScript, no emit
+```
+
+---
 
 ## What works today (verified)
 
@@ -31,37 +109,9 @@ implementation against those hypotheses.
    `typecheck`/`test` scripts (or custom `--validate-cmd` commands).
 
 Plus, for research: an **offline demo mode** (no API key needed) and **JSONL
-event logs** with timestamps, search hits, token usage — the raw material for
-the experiments.
+event logs** with timestamps, search hits, and token usage.
 
-## Quickstart
-
-```bash
-npm install
-# optional for live runs: copy .env.example to .env and fill in OPENAI_API_KEY
-
-# 1) Offline demo (no key): canonical task, diffs only, nothing written
-npm run demo
-
-# 2) Same demo, applied to the fixture and validated, then reset
-npm run dev -- fixtures/sample-react-app --mock --yes --validate
-git restore fixtures
-
-# 3) Live run against any repo
-npm run dev -- <repo> "Add a search input to the users table, debounce it by 300ms, and update the API request."
-
-# 4) Hybrid retrieval (embeddings + RRF; needs a key)
-npm run dev -- <repo> "<task>" --retrieval hybrid
-
-# Checks
-npm test
-npm run typecheck
-```
-
-Any OpenAI-compatible endpoint works: set `OPENAI_BASE_URL` and
-`OPENAI_MODEL` in `.env` (default model: `gpt-5.4`).
-
-### CLI reference
+### CLI flags
 
 | Flag | Meaning |
 | --- | --- |
@@ -102,7 +152,8 @@ A run looks like: `search_code` → `read_file` (only files the model chooses)
 → `propose_edit` (staged, validated, never written) → diffs printed →
 `yes/no` → writes with drift detection → optional validation. Every step emits
 an event; the CLI renders it today, a React UI can stream the same events over
-SSE tomorrow (plan Phase 5).
+SSE tomorrow (plan Phase 5). See [docs/code-tour.md](docs/code-tour.md) for
+the guided reading order.
 
 ## Safety model
 
@@ -114,7 +165,7 @@ SSE tomorrow (plan Phase 5).
   non-regular files.
 - Multi-file applies check every file for drift first; on a mid-apply failure
   the already-written files are restored (best effort — use git as the real
-  checkpoint, exactly as the plan recommends).
+  checkpoint).
 - Validation commands are user-approved strings run through the platform
   shell in the repo root; treat `--validate-cmd` like running the command
   yourself.

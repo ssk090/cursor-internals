@@ -1,3 +1,7 @@
+/**
+ * What this proves: validation runs declared commands, captures exit codes
+ * and output, and never guesses what to run.
+ */
 import { describe, expect, it } from "vitest";
 import { Workspace } from "../src/context/workspace.js";
 import {

@@ -1,3 +1,7 @@
+/**
+ * What this proves: approved edits apply, drift is detected before writing,
+ * and a partial failure rolls back what was already written.
+ */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Workspace } from "../src/context/workspace.js";
 import { StaleEditError, applyEdits } from "../src/editing/apply.js";

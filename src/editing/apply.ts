@@ -1,13 +1,21 @@
+/**
+ * Writing approved edits to disk.
+ *
+ * The contract (covered by test/apply.test.ts):
+ *   1. nothing is written until every file has been re-checked against the
+ *      content captured when its edit was staged — if any file changed in
+ *      the meantime, the whole apply aborts (drift detection);
+ *   2. each write is atomic (see Workspace.writeFile);
+ *   3. if a later write fails, files written so far are restored in reverse.
+ *
+ * A process crash mid-apply is not covered: use git as the real checkpoint.
+ */
 import type { Workspace } from "../context/workspace.js";
 import type { StagedEdit } from "./proposal.js";
 
 export class StaleEditError extends Error {}
 
-/**
- * Refuse to apply when any file changed after the edit was staged. This is
- * the MVP answer to hard problem #2 ("reliable editing"): content comparison,
- * not timestamps. Versioned edits and three-way merges are future work.
- */
+/** Abort when any file changed after its edit was staged. */
 export async function assertUnchanged(
   workspace: Workspace,
   edits: StagedEdit[],
@@ -23,13 +31,9 @@ export async function assertUnchanged(
 }
 
 /**
- * Apply staged edits, all or nothing at best effort:
- * 1. every file is re-checked against the staged `original` first;
- * 2. writes happen one file at a time (each write is atomic via temp+rename);
- * 3. if a later write fails, already-written files are restored in reverse.
- *
- * A process crash mid-apply is not covered — use the checkpoint (git) before
- * running destructive tasks.
+ * Apply staged edits, all-or-nothing at best effort. Returns the files
+ * written. Throws StaleEditError (nothing written) when a file changed, or
+ * Error (with rollback info) when a write fails mid-apply.
  */
 export async function applyEdits(
   workspace: Workspace,
@@ -37,29 +41,32 @@ export async function applyEdits(
 ): Promise<string[]> {
   await assertUnchanged(workspace, edits);
 
-  const applied: StagedEdit[] = [];
+  const writtenSoFar: StagedEdit[] = [];
   try {
     for (const edit of edits) {
       await workspace.writeFile(edit.file, edit.updated);
-      applied.push(edit);
+      writtenSoFar.push(edit);
     }
   } catch (error) {
+    // Something failed mid-apply: undo the files we already wrote.
     const rollbackFailures: string[] = [];
-    for (const edit of [...applied].reverse()) {
+    for (const edit of [...writtenSoFar].reverse()) {
       try {
         await workspace.writeFile(edit.file, edit.original);
       } catch (rollbackError) {
         const message =
-          rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError);
         rollbackFailures.push(`${edit.file}: ${message}`);
       }
     }
 
     const message = error instanceof Error ? error.message : String(error);
     const rollbackNote =
-      applied.length === 0
+      writtenSoFar.length === 0
         ? "No files had been written yet."
-        : `Rolled back ${applied.length - rollbackFailures.length}/${applied.length} already-written file(s).`;
+        : `Rolled back ${writtenSoFar.length - rollbackFailures.length}/${writtenSoFar.length} already-written file(s).`;
     const failuresNote =
       rollbackFailures.length > 0
         ? ` Rollback failures: ${rollbackFailures.join("; ")}`
@@ -67,5 +74,5 @@ export async function applyEdits(
     throw new Error(`Apply failed: ${message} ${rollbackNote}${failuresNote}`);
   }
 
-  return applied.map((edit) => edit.file);
+  return writtenSoFar.map((edit) => edit.file);
 }

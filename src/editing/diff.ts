@@ -1,3 +1,4 @@
+/** Turning staged edits into reviewable patches. */
 import { createPatch, diffLines } from "diff";
 import type { StagedEdit } from "./proposal.js";
 
@@ -15,6 +16,7 @@ function countLines(value: string): number {
   return value.endsWith("\n") ? newlines : newlines + 1;
 }
 
+/** Added/removed line counts shown in the review summary. */
 export function diffStats(original: string, updated: string): DiffStats {
   let added = 0;
   let removed = 0;

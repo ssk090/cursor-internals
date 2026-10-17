@@ -1,3 +1,7 @@
+/**
+ * What this proves: edits must be exact and unique, compose per file, and
+ * never touch disk at staging time.
+ */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Workspace } from "../src/context/workspace.js";
 import { EditError, ProposalStore } from "../src/editing/proposal.js";
