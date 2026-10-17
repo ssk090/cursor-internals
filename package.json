@@ -1,0 +1,29 @@
+{
+  "name": "mini-cursor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A minimal, reverse-engineered Cursor-style coding agent: repo-aware retrieval, tool-using agent loop, diff review, approval-gated edits, validation.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "demo": "tsx src/cli.ts fixtures/sample-react-app --mock --dry-run",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "diff": "^9.0.0",
+    "dotenv": "^18.0.8",
+    "fast-glob": "^3.3.3",
+    "openai": "^7.36.0"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

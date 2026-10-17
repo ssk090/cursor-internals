@@ -1,0 +1,3 @@
+# Keep line endings stable in the working tree. The agent's exact-text
+# matching (propose_edit) is byte-sensitive, so LF everywhere, always.
+* text=auto eol=lf
