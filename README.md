@@ -8,6 +8,8 @@ implementation against those hypotheses.
 - **New here?** [docs/code-tour.md](docs/code-tour.md) — reading order and a
   one-picture flow.
 - Evidence ledger: [docs/research-notes.md](docs/research-notes.md)
+- How Cursor indexes a codebase, evidence-based:
+  [docs/cursor-indexing.md](docs/cursor-indexing.md)
 - Experiment protocol: [experiments/README.md](experiments/README.md)
 - Target fixture: [fixtures/sample-react-app](fixtures/sample-react-app)
 
