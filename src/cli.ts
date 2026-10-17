@@ -140,7 +140,7 @@ function renderEvent(event: AgentEvent): void {
       console.log(`  [propose] ${event.file}`);
       break;
     case "staged":
-      console.log(`  [staged] ${event.file} (${event.totalStaged} edit(s) staged)`);
+      console.log(`  [staged] ${event.file} (${event.totalStaged} file(s) staged)`);
       break;
     case "message":
       console.log(`  [agent] ${event.text.trim()}`);

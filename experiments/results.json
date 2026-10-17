@@ -1,0 +1,7 @@
+{
+  "fixtureRepo": "fixtures/sample-react-app",
+  "fixtureCheckpoint": "872d071",
+  "notes": "One object per experiment run. Schema and field meanings: experiments/README.md. Nothing here is recorded yet — fill this during Phase 1.",
+  "runs": [],
+  "retrievalBenchmark": []
+}
